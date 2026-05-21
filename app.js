@@ -10,7 +10,7 @@ app.use(express.json());
 const API_VERSION = "v23.0";
 
 /**
- * Step 1
+ * STEP 1
  * Redirect user to Facebook OAuth
  */
 app.get("/auth/facebook", (req, res) => {
@@ -18,7 +18,9 @@ app.get("/auth/facebook", (req, res) => {
   const oauthUrl =
     `https://www.facebook.com/${API_VERSION}/dialog/oauth` +
     `?client_id=${process.env.APP_ID}` +
-    `&redirect_uri=${process.env.REDIRECT_URI}` +
+    `&redirect_uri=${encodeURIComponent(
+      process.env.REDIRECT_URI
+    )}` +
     `&scope=` +
     [
       "business_management",
@@ -30,8 +32,8 @@ app.get("/auth/facebook", (req, res) => {
 });
 
 /**
- * Step 2
- * Facebook redirects here with code
+ * STEP 2
+ * Facebook callback
  */
 app.get(
   "/auth/facebook/callback",
@@ -48,9 +50,11 @@ app.get(
       }
 
       /**
-       * Exchange code for access token
+       * STEP 3
+       * Exchange authorization code
+       * for SHORT-LIVED token
        */
-      const tokenResponse =
+      const shortTokenResponse =
         await axios.get(
           `https://graph.facebook.com/${API_VERSION}/oauth/access_token`,
           {
@@ -69,18 +73,74 @@ app.get(
           }
         );
 
-      const accessToken =
-        tokenResponse.data.access_token;
+      const shortLivedToken =
+        shortTokenResponse.data.access_token;
 
-      console.log(
-        "OAuth Token Generated:"
-      );
+      /**
+       * STEP 4
+       * Exchange SHORT token
+       * for LONG-LIVED token
+       */
+      const longTokenResponse =
+        await axios.get(
+          `https://graph.facebook.com/${API_VERSION}/oauth/access_token`,
+          {
+            params: {
+              grant_type:
+                "fb_exchange_token",
 
-      console.log(accessToken);
+              client_id:
+                process.env.APP_ID,
+
+              client_secret:
+                process.env.APP_SECRET,
+
+              fb_exchange_token:
+                shortLivedToken
+            }
+          }
+        );
+
+      const longLivedToken =
+        longTokenResponse.data.access_token;
+
+      const expiresIn =
+        longTokenResponse.data.expires_in;
+
+      /**
+       * STEP 5
+       * Calculate expiry date
+       */
+      const expiresAt =
+        new Date(
+          Date.now() +
+          expiresIn * 1000
+        );
+
+      /**
+       * STEP 6
+       * Validate token
+       */
+      const appAccessToken =
+        `${process.env.APP_ID}|${process.env.APP_SECRET}`;
+
+      const debugResponse =
+        await axios.get(
+          `https://graph.facebook.com/debug_token`,
+          {
+            params: {
+              input_token:
+                longLivedToken,
+
+              access_token:
+                appAccessToken
+            }
+          }
+        );
 
       /**
        * OPTIONAL:
-       * Send test WhatsApp message
+       * Send WhatsApp message
        */
 
       const messageResponse =
@@ -96,13 +156,13 @@ app.get(
 
             text: {
               body:
-                "Hello from Dynamic OAuth Token 🚀"
+                "Hello from Long-Lived OAuth Token 🚀"
             }
           },
           {
             headers: {
               Authorization:
-                `Bearer ${accessToken}`,
+                `Bearer ${longLivedToken}`,
 
               "Content-Type":
                 "application/json"
@@ -110,9 +170,25 @@ app.get(
           }
         );
 
+      /**
+       * FINAL RESPONSE
+       */
       return res.json({
+
         success: true,
-        accessToken,
+
+        shortLivedToken,
+
+        longLivedToken,
+
+        expiresInSeconds:
+          expiresIn,
+
+        expiresAt,
+
+        tokenValidation:
+          debugResponse.data,
+
         messageResponse:
           messageResponse.data
       });
@@ -133,7 +209,11 @@ app.get(
   }
 );
 
+/**
+ * START SERVER
+ */
 app.listen(5000, () => {
+
   console.log(
     "Server running on port 5000"
   );
